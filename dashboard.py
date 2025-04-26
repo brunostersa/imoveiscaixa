@@ -75,7 +75,7 @@ with st.sidebar:
     if st.button("🧹 Limpar Filtros"):
         st.session_state.clear()
         st.cache_data.clear()
-        st.experimental_rerun()
+        st.rerun()
 
     # Carregar perfis
     perfis = carregar_perfis()
