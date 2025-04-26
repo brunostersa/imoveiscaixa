@@ -42,7 +42,7 @@ def validar_defaults(valores_salvos, opcoes_atuais):
         return [v for v in valores_salvos if v in opcoes_atuais]
     return opcoes_atuais
 
-arquivo = "Smart Leilões - Imóveis Caixa.xlsx"
+arquivo = "smart_leiloes_imoveis_caixa.xlsx"
 df = carregar_dados(arquivo)
 df = calcular_score(df)
 
