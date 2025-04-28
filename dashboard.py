@@ -1,189 +1,142 @@
-
 import streamlit as st
 import pandas as pd
+pd.set_option("styler.render.max_elements", 60000)
 import plotly.express as px
-import json
 import os
+import firebase_admin
+from firebase_admin import credentials, db
+from filtros_sidebar import renderizar_filtros
+from firebase_auth import exibir_login_cadastro
+from session_utils import limpar_sessao, carregar_usuario
 
-st.set_page_config(page_title="Imóveis Caixa", layout="wide")
-st.title("📊 Painel de Oportunidades - Imóveis Caixa")
+# Função que exibe o conteúdo principal do dashboard
+def mostrar_dashboard():
+    hide_streamlit_style = """
+        <style>
+            #MainMenu {visibility: hidden;}
+            footer {visibility: hidden;}
+        </style>
+    """
+    st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-@st.cache_data
-def carregar_dados(caminho):
-    df = pd.read_excel(caminho, sheet_name="Imóveis Caixa")
-    df["Desconto"] = pd.to_numeric(df["Desconto"], errors="coerce")
-    df["Preço Venda"] = pd.to_numeric(df["Preço Venda"], errors="coerce")
-    df["Preço Avaliação"] = pd.to_numeric(df["Preço Avaliação"], errors="coerce")
-    df["Lucro Potencial"] = df["Preço Avaliação"] - df["Preço Venda"]
-    df["Modalidade"] = df["Modo Venda"].fillna("Outros")
-    for col in df.columns:
-        if "data" in col.lower():
-            try:
-                df[col] = pd.to_datetime(df[col], errors='coerce')
-                df.rename(columns={col: "Data Cadastro"}, inplace=True)
-                break
-            except:
-                pass
-    return df
+    # === Session
+    user_email = st.session_state.get("user_email") or carregar_usuario()
+    if not user_email:
+        st.switch_page("login.py")  # ou outro nome da sua tela de login
 
-def calcular_score(df):
-    agrupado = df.groupby(["Cidade", "Tipo"])["Preço Venda"].mean().reset_index()
-    agrupado.rename(columns={"Preço Venda": "Preço Médio"}, inplace=True)
-    df = df.merge(agrupado, on=["Cidade", "Tipo"], how="left")
-    df["Score"] = (
-        (df["Desconto"] / 100) * 40 +
-        (df["Lucro Potencial"] / df["Preço Médio"]) * 30 +
-        (1 - (df["Preço Venda"] / df["Preço Médio"])) * 30
-    ).clip(lower=0, upper=100)
-    def classificar(score):
-        if score > 75:
-            return "🟢 Excelente"
-        elif score > 50:
-            return "🟡 Médio"
-        else:
-            return "🔴 Ruim"
-    df["Classificação"] = df["Score"].apply(classificar)
-    return df
 
-def carregar_perfis():
-    if os.path.exists("filtros_perfis.json"):
-        with open("filtros_perfis.json", "r") as f:
-            return json.load(f)
-    return {}
 
-def salvar_perfil(nome, dados):
-    perfis = carregar_perfis()
-    perfis[nome] = dados
-    with open("filtros_perfis.json", "w") as f:
-        json.dump(perfis, f)
+    # Inicializa Firebase se necessário
+    if not firebase_admin._apps:
+        try:
+            cred = credentials.Certificate("leiloesdevproject-firebase-adminsdk-fbsvc-fb8c7e8d47.json")
+            firebase_admin.initialize_app(cred, {
+                'databaseURL': 'https://leiloesdevproject-default-rtdb.firebaseio.com/'
+            }, name="leiloes_app")
+        except Exception as e:
+            st.error(f"Erro ao inicializar o Firebase: {e}")
 
-def excluir_perfil(nome):
-    perfis = carregar_perfis()
-    if nome in perfis:
-        del perfis[nome]
-        with open("filtros_perfis.json", "w") as f:
-            json.dump(perfis, f)
+    
+    st.title("📊 Painel de Oportunidades - Imóveis Caixa")
 
-arquivo = "smart_leiloes_imoveis_caixa.xlsx"
-df = carregar_dados(arquivo)
-df = calcular_score(df)
 
-# === Sidebar
-with st.sidebar:
-    st.header("🔍 Filtros")
 
-    if st.button("🧹 Limpar Filtros"):
-        st.session_state.clear()
-        st.cache_data.clear()
-        st.rerun()
 
-    # Carregar perfis
-    perfis = carregar_perfis()
-    nomes_perfis = list(perfis.keys())
-    perfil_escolhido = st.selectbox("🎯 Carregar Perfil", [""] + nomes_perfis)
-    if perfil_escolhido:
-        filtros = perfis[perfil_escolhido]
-    else:
-        filtros = {}
 
-    # Filtros com fallback por sessão
-    modalidades = st.multiselect("Modalidade de Venda", sorted(df["Modalidade"].dropna().unique()),
-                                 default=filtros.get("modalidades", []))
+
+
+    # === Funções utilitárias ===
+    @st.cache_data(ttl=600)
+    def carregar_dados(caminho):
+        if not os.path.exists(caminho):
+            st.error("Arquivo de dados não encontrado.")
+            st.stop()
+        df = pd.read_excel(caminho, sheet_name="Imóveis Caixa")
+        df["Desconto"] = pd.to_numeric(df["Desconto"], errors="coerce")
+        df["Preço Venda"] = pd.to_numeric(df["Preço Venda"], errors="coerce")
+        df["Preço Avaliação"] = pd.to_numeric(df["Preço Avaliação"], errors="coerce")
+        df["Lucro Potencial"] = df["Preço Avaliação"] - df["Preço Venda"]
+        df["Modalidade"] = df["Modo Venda"].fillna("Outros")
+        for col in df.columns:
+            if "data" in col.lower():
+                try:
+                    df[col] = pd.to_datetime(df[col], errors='coerce')
+                    df.rename(columns={col: "Data Cadastro"}, inplace=True)
+                    break
+                except:
+                    pass
+        return df
+
+    def calcular_score(df):
+        agrupado = df.groupby(["Cidade", "Tipo"])["Preço Venda"].mean().reset_index()
+        agrupado.rename(columns={"Preço Venda": "Preço Médio"}, inplace=True)
+        df = df.merge(agrupado, on=["Cidade", "Tipo"], how="left")
+
+        # Normalização para garantir valores de 0 a 100
+        score_bruto = (
+            ((df["Desconto"] / 100).fillna(0)) * 0.4 +
+            ((df["Lucro Potencial"] / df["Preço Médio"]).fillna(0)) * 0.3 +
+            ((1 - (df["Preço Venda"] / df["Preço Médio"])).fillna(0)) * 0.3
+        )
+
+        score_bruto = score_bruto.clip(lower=0)
+        score_min, score_max = score_bruto.min(), score_bruto.max()
+        df["Score"] = ((score_bruto - score_min) / (score_max - score_min) * 100).clip(0, 100).round(2)
+
+        return df
+
+    # === Carregamento de dados ===
+    arquivo = "smart_leiloes_imoveis_caixa.xlsx"
+    df = carregar_dados(arquivo)
+    df = calcular_score(df)
+
+    # === Filtros ===
+    modalidades, estados, cidades, tipos, desconto_range, financiamento, lucro, score_minimo = renderizar_filtros(df)
+
+    # === Aplicação dos filtros ===
     if modalidades:
         df = df[df["Modalidade"].isin(modalidades)]
-
-    estados = st.multiselect("Estado", sorted(df["Estado"].dropna().unique()),
-                             default=filtros.get("estados", []))
     if estados:
         df = df[df["Estado"].isin(estados)]
-
-    cidades = st.multiselect("Cidade", sorted(df["Cidade"].dropna().unique()),
-                             default=filtros.get("cidades", []))
     if cidades:
         df = df[df["Cidade"].isin(cidades)]
-
-    tipos = st.multiselect("Tipo de Imóvel", sorted(df["Tipo"].dropna().unique()),
-                           default=filtros.get("tipos", []))
     if tipos:
         df = df[df["Tipo"].isin(tipos)]
-
-    min_d, max_d = st.slider("Intervalo de Desconto (%)",
-                             float(df["Desconto"].min()), float(df["Desconto"].max()),
-                             (filtros.get("desconto_min", float(df["Desconto"].min())),
-                              filtros.get("desconto_max", float(df["Desconto"].max()))))
-    df = df[(df["Desconto"] >= min_d) & (df["Desconto"] <= max_d)]
-
-    financiamento = st.checkbox("Apenas imóveis que aceitam financiamento", value=filtros.get("financiamento", False))
-    lucro = st.checkbox("Apenas imóveis com decréscimo no preço", value=filtros.get("lucro", False))
-
+    df = df[(df["Desconto"] >= desconto_range[0]) & (df["Desconto"] <= desconto_range[1])]
     if financiamento:
         df = df[df["Aceita Financiamento"].str.upper() == "SIM"]
     if lucro:
         df = df[df["Lucro Potencial"] > 0]
+    df = df[df["Score"] >= score_minimo]
 
-    st.markdown("---")
-    with st.form("salvar_perfil_form"):
-        nome_perfil = st.text_input("💾 Nome do novo perfil")
-        salvar = st.form_submit_button("Salvar Perfil")
-        if salvar and nome_perfil:
-            salvar_perfil(nome_perfil, {
-                "modalidades": modalidades,
-                "estados": estados,
-                "cidades": cidades,
-                "tipos": tipos,
-                "desconto_min": min_d,
-                "desconto_max": max_d,
-                "financiamento": financiamento,
-                "lucro": lucro
-            })
-            st.success("Perfil salvo com sucesso!")
+    # === KPIs ===
+    st.subheader("📊 Indicadores")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("🏠 Total de Imóveis", len(df))
+    col2.metric("💲 Desconto Médio", f'{df["Desconto"].mean():.2f}%')
+    financiaveis = df[df["Aceita Financiamento"].str.upper() == "SIM"]
+    lucro_medio = financiaveis["Lucro Potencial"].sum() / len(financiaveis) if len(financiaveis) > 0 else 0
+    col3.metric("💼 Lucro Médio (Financiáveis)", f'R$ {lucro_medio:,.2f}')
 
-    if perfil_escolhido:
-        if st.button("🗑 Excluir Perfil Selecionado"):
-            excluir_perfil(perfil_escolhido)
-            st.experimental_rerun()
+    # === Tabela Completa ===
+    st.subheader("📋 Tabela Completa")
+    df_fmt = df[["Cidade", "Tipo", "Modalidade", "Aceita Financiamento", "Desconto", "Preço Avaliação", "Preço Venda", "Lucro Potencial", "Score", "Site"]].copy()
 
-# === KPIs
-col1, col2, col3 = st.columns(3)
-col1.metric("🏠 Imóveis", len(df))
-col2.metric("💲 Desconto Médio", f'{df["Desconto"].mean():.2f}%')
-financiaveis = df[df["Aceita Financiamento"].str.upper() == "SIM"]
-lucro_medio_fina = financiaveis["Lucro Potencial"].sum() / len(financiaveis) if len(financiaveis) > 0 else 0
-col3.metric("💼 Lucro Médio (Financiáveis)", f'R$ {lucro_medio_fina:,.2f}')
+    # Não formatar Score antes do Styler
+    for col in ["Desconto", "Preço Avaliação", "Preço Venda", "Lucro Potencial"]:
+        if "Desconto" in col:
+            df_fmt[col] = df_fmt[col].map("{:.2f}%".format)
+        else:
+            df_fmt[col] = df_fmt[col].map("R$ {:,.2f}".format)
 
-# === Score
-st.subheader("🧠 Score Visual por Classificação")
-score_dist = df["Classificação"].value_counts().reset_index()
-score_dist.columns = ["Classificação", "Qtd"]
-fig_score = px.bar(score_dist, x="Classificação", y="Qtd", color="Classificação", color_discrete_map={
-    "🟢 Excelente": "green",
-    "🟡 Médio": "orange",
-    "🔴 Ruim": "red"
-})
-st.plotly_chart(fig_score, use_container_width=True)
+    # Coloração do Score com escala fixa 0–100 (verde = alto)
+    styled_df = df_fmt.style.format({"Score": "{:.2f}"}).background_gradient(
+        subset=["Score"], cmap="RdYlGn", vmin=0, vmax=100
+    )
+    st.dataframe(styled_df, use_container_width=True)
 
-# === Evolução
-if "Data Cadastro" in df.columns:
-    st.subheader("📆 Evolução de imóveis por data")
-    df_time = df.dropna(subset=["Data Cadastro"])
-    df_time = df_time.groupby(df_time["Data Cadastro"].dt.to_period("M")).size().reset_index(name="Qtd")
-    df_time["Data Cadastro"] = df_time["Data Cadastro"].dt.to_timestamp()
-    fig_evo = px.line(df_time, x="Data Cadastro", y="Qtd", title="Imóveis cadastrados por mês")
-    st.plotly_chart(fig_evo, use_container_width=True)
+    # Exportar CSV
+    csv = df.to_csv(index=False).encode('utf-8')
+    st.download_button("⬇️ Exportar Resultados", csv, file_name="imoveis_filtrados.csv", mime="text/csv")
 
-# === Tabelas
-st.subheader("🚀 Top 10 Descontos")
-top10 = df.sort_values("Desconto", ascending=False).head(10)
-top10["Ver Imóvel"] = top10["Site"].apply(lambda url: f"{url}" if pd.notna(url) else "")
-top10_fmt = top10[["Cidade", "Tipo", "Desconto", "Lucro Potencial", "Classificação", "Ver Imóvel"]].copy()
-top10_fmt["Desconto"] = top10_fmt["Desconto"].map("{:.2f}%".format)
-top10_fmt["Lucro Potencial"] = top10_fmt["Lucro Potencial"].map("R$ {:,.2f}".format)
-st.dataframe(top10_fmt, use_container_width=True)
 
-st.subheader("📋 Tabela Completa")
-df_fmt = df[["Cidade", "Tipo", "Modalidade", "Aceita Financiamento", "Desconto", "Preço Avaliação", "Preço Venda", "Lucro Potencial", "Classificação", "Site"]].copy()
-df_fmt["Desconto"] = df_fmt["Desconto"].map("{:.2f}%".format)
-df_fmt["Preço Avaliação"] = df_fmt["Preço Avaliação"].map("R$ {:,.2f}".format)
-df_fmt["Preço Venda"] = df_fmt["Preço Venda"].map("R$ {:,.2f}".format)
-df_fmt["Lucro Potencial"] = df_fmt["Lucro Potencial"].map("R$ {:,.2f}".format)
-st.dataframe(df_fmt, use_container_width=True)
